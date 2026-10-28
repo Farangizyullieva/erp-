@@ -1,0 +1,872 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_MIGRATE_URL")
+}
+
+enum PermissionScope {
+  own
+  branch
+  all
+
+  @@map("permission_scope")
+}
+
+model Tenant {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  slug      String   @unique
+  timezone  String   @default("Asia/Tashkent")
+  currency  String   @default("UZS") @db.Char(3)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("tenants")
+}
+
+model Branch {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  name         String
+  code         String
+  address      String?
+  phone        String?
+  workingHours String?  @map("working_hours")
+  timezone     String   @default("Asia/Tashkent")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  classrooms Classroom[]
+  users      UserBranch[]
+  students   Student[]
+  holidays   Holiday[]
+  studyUnits StudyUnit[]
+  leads      Lead[]
+
+  @@unique([tenantId, code])
+  @@map("branches")
+}
+
+model Classroom {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  name      String
+  capacity  Int
+  equipment String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  branch     Branch      @relation(fields: [branchId], references: [id])
+  studyUnits StudyUnit[]
+  lessons    Lesson[]
+
+  @@unique([branchId, name])
+  @@index([tenantId, branchId])
+  @@map("classrooms")
+}
+
+model User {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  phone            String?
+  email            String?
+  passwordHash     String    @map("password_hash")
+  fullName         String    @map("full_name")
+  isActive         Boolean   @default(true) @map("is_active")
+  lastLoginAt      DateTime? @map("last_login_at") @db.Timestamptz
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  /// TOTP kaliti shifrlangan holda (AES-256-GCM); totpEnabledAt bo'sh bo'lsa — hali tasdiqlanmagan
+  totpSecret       String?   @map("totp_secret")
+  totpEnabledAt    DateTime? @map("totp_enabled_at") @db.Timestamptz
+  /// Oxirgi qabul qilingan TOTP qadami — kodni qayta ishlatishga qarshi
+  totpLastStep     Int?      @map("totp_last_step")
+  photoFileId      String?   @map("photo_file_id") @db.Uuid
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  roles         UserRole[]
+  branches      UserBranch[]
+  refreshTokens RefreshToken[]
+  ownedStudents Student[]
+  notifications Notification[]
+  chats         ChatParticipant[]
+  chatMessages  ChatMessage[]
+  taughtUnits   StudyUnit[]      @relation("UnitTeacher")
+  taughtLessons Lesson[]         @relation("LessonTeacher")
+  ownedLeads    Lead[]
+  /// Shaxsiy kabinet foydalanuvchisi bo'lsa — qaysi o'quvchi
+  portalStudent Student?         @relation("StudentPortal")
+
+  @@unique([tenantId, phone])
+  @@unique([tenantId, email])
+  @@index([tenantId, createdAt(sort: Desc), id])
+  @@map("users")
+}
+
+model Role {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  code      String
+  name      String
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@unique([tenantId, code])
+  @@map("roles")
+}
+
+/// Global ma'lumotnoma (tenant'siz); katalog src/common/auth/permissions.catalog.ts dan seed qilinadi
+model Permission {
+  code        String @id
+  group       String
+  description String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  tenantId       String          @map("tenant_id") @db.Uuid
+  roleId         String          @map("role_id") @db.Uuid
+  permissionCode String          @map("permission_code")
+  scope          PermissionScope @default(all)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionCode], references: [code])
+
+  @@id([roleId, permissionCode])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+  roleId   String @map("role_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model UserBranch {
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+
+  user   User   @relation(fields: [userId], references: [id])
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@id([userId, branchId])
+  @@index([branchId])
+  @@map("user_branches")
+}
+
+model RefreshToken {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash")
+  familyId     String    @map("family_id") @db.Uuid
+  replacedById String?   @map("replaced_by_id") @db.Uuid
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  requestId  String?  @map("request_id")
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz
+
+  @@index([tenantId, entityType, entityId, occurredAt(sort: Desc)])
+  @@index([tenantId, occurredAt(sort: Desc)])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// 1-bosqich: ma'lumotnomalar va o'quvchilar
+// ---------------------------------------------------------------------------
+
+enum DictionaryKind {
+  discipline
+  level
+  age_category
+  study_unit_type
+  ad_source
+  learning_goal
+  cancel_reason
+
+  @@map("dictionary_kind")
+}
+
+/// Tenant-scoped ma'lumotnomalar (TZ M1.3). O'chirilmaydi — is_active = false, chunki tarixiy yozuvlar bog'langan
+model DictionaryItem {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String         @map("tenant_id") @db.Uuid
+  kind      DictionaryKind
+  name      String
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  studentsByAdSource     Student[] @relation("StudentAdSource")
+  unitsByDiscipline      StudyUnit[] @relation("UnitDiscipline")
+  unitsByLevel           StudyUnit[] @relation("UnitLevel")
+  leadsByDiscipline      Lead[]      @relation("LeadDiscipline")
+  leadsByLevel           Lead[]      @relation("LeadLevel")
+  leadsBySource          Lead[]      @relation("LeadSource")
+  studentsByLearningGoal Student[] @relation("StudentLearningGoal")
+
+  @@unique([tenantId, kind, name])
+  @@map("dictionary_items")
+}
+
+model Holiday {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  /// null = barcha filiallar
+  branchId    String?  @map("branch_id") @db.Uuid
+  date        DateTime @db.Date
+  name        String
+  skipLessons Boolean  @default(true) @map("skip_lessons")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  @@index([tenantId, date])
+  @@map("holidays")
+}
+
+enum Gender {
+  male
+  female
+
+  @@map("gender")
+}
+
+enum StudentStatus {
+  new
+  active
+  paused
+  finished
+  archived
+
+  @@map("student_status")
+}
+
+/// Jismoniy shaxs. Telefon unique emas: aka-ukalar ko'pincha ota-onaning bitta raqami bilan yoziladi
+model Client {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  fullName  String    @map("full_name")
+  phone     String?
+  email     String?
+  birthDate DateTime? @map("birth_date") @db.Date
+  gender    Gender?
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  student        Student?
+  contactPersons ContactPerson[]
+
+  @@index([tenantId, phone])
+  @@map("clients")
+}
+
+model ContactPerson {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  clientId              String   @map("client_id") @db.Uuid
+  fullName              String   @map("full_name")
+  relation              String
+  phone                 String?
+  email                 String?
+  isBillRecipient       Boolean  @default(false) @map("is_bill_recipient")
+  receivesNotifications Boolean  @default(true) @map("receives_notifications")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  client         Client               @relation(fields: [clientId], references: [id])
+  messengerLinks MessengerLink[]
+  linkTokens     MessengerLinkToken[]
+
+  @@index([clientId])
+  @@index([tenantId, phone])
+  @@map("contact_persons")
+}
+
+model Student {
+  id                   String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String        @map("tenant_id") @db.Uuid
+  /// Odam o'qiydigan tartib raqami (tenant bo'yicha): kartochkada "#00042" ko'rinishida, qidiruvda ishlatiladi
+  number               Int
+  /// BR-S1: bir client'da bitta student kartochkasi
+  clientId             String        @unique @map("client_id") @db.Uuid
+  branchId             String        @map("branch_id") @db.Uuid
+  /// BR-S3: enrollment holatidan hisoblanadi; archived — qo'lda
+  status               StudentStatus @default(new)
+  ownerId              String?       @map("owner_id") @db.Uuid
+  /// Tiyinda; ledger bilan bitta transaction'da atomik yangilanadi (M6.4)
+  cachedBalance        BigInt        @default(0) @map("cached_balance")
+  blacklisted          Boolean       @default(false)
+  blacklistReason      String?       @map("blacklist_reason")
+  adSourceId           String?       @map("ad_source_id") @db.Uuid
+  learningGoalId       String?       @map("learning_goal_id") @db.Uuid
+  notificationLanguage String        @default("uz") @map("notification_language") @db.VarChar(5)
+  note                 String?
+  customData           Json          @default("{}") @map("custom_data")
+  archivedAt           DateTime?     @map("archived_at") @db.Timestamptz
+  mergedIntoId         String?       @map("merged_into_id") @db.Uuid
+  photoFileId          String?       @map("photo_file_id") @db.Uuid
+  /// O'quvchi kabinetiga kirish uchun foydalanuvchi (student roli)
+  portalUserId         String?       @unique @map("portal_user_id") @db.Uuid
+  createdAt            DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  client       Client          @relation(fields: [clientId], references: [id])
+  branch       Branch          @relation(fields: [branchId], references: [id])
+  owner        User?           @relation(fields: [ownerId], references: [id])
+  portalUser   User?           @relation("StudentPortal", fields: [portalUserId], references: [id])
+  adSource     DictionaryItem? @relation("StudentAdSource", fields: [adSourceId], references: [id])
+  learningGoal DictionaryItem? @relation("StudentLearningGoal", fields: [learningGoalId], references: [id])
+  enrollments  Enrollment[]
+  attendances  Attendance[]
+  ledger       LedgerEntry[]
+  submissions  Submission[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, createdAt(sort: Desc), id])
+  @@index([tenantId, ownerId])
+  @@map("students")
+}
+
+// ---------------------------------------------------------------------------
+// Bildirishnomalar va ichki chat (M8.5)
+// ---------------------------------------------------------------------------
+
+/// Matn saqlanmaydi: `type` + `data` — klient foydalanuvchi tilida ko'rsatadi
+model Notification {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String
+  data      Json      @default("{}")
+  readAt    DateTime? @map("read_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model Chat {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  /// Hozircha faqat xodimlar orasidagi 1:1 suhbat; mijoz va guruh chatlari kommunikatsiya bosqichida
+  kind          String    @default("direct")
+  /// Ikki ishtirokchi id'si tartiblangan holda — bir juftlik uchun bitta suhbat
+  directKey     String?   @map("direct_key")
+  lastMessageAt DateTime? @map("last_message_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  participants ChatParticipant[]
+  messages     ChatMessage[]
+
+  @@unique([tenantId, directKey])
+  @@map("chats")
+}
+
+model ChatParticipant {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  chatId     String   @map("chat_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  lastReadAt DateTime @default(now()) @map("last_read_at") @db.Timestamptz
+
+  chat Chat @relation(fields: [chatId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@id([chatId, userId])
+  @@index([userId])
+  @@map("chat_participants")
+}
+
+model ChatMessage {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  chatId    String   @map("chat_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  chat   Chat @relation(fields: [chatId], references: [id])
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([chatId, createdAt(sort: Desc)])
+  @@map("chat_messages")
+}
+
+/// Tenant bo'yicha ketma-ket raqamlar (TZ 8.2): o'quvchi ID, keyinchalik schyot va shartnoma raqamlari.
+/// PostgreSQL sequence emas — u rollback'da bo'shliq qoldiradi.
+model NumberSequence {
+  tenantId  String @map("tenant_id") @db.Uuid
+  kind      String
+  /// Yillik raqamlash kerak bo'lmasa 0
+  year      Int    @default(0)
+  lastValue Int    @map("last_value")
+
+  @@id([tenantId, kind, year])
+  @@map("number_sequences")
+}
+
+// ---------------------------------------------------------------------------
+// Tashqi kommunikatsiya (M8): Telegram orqali ota-onalarga xabarlar
+// ---------------------------------------------------------------------------
+
+/// Aloqa shaxsining messenjerdagi chat'i (Telegram chat_id). Bot bloklansa blockedAt qo'yiladi.
+model MessengerLink {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  contactPersonId String    @map("contact_person_id") @db.Uuid
+  channel         String    @default("telegram")
+  externalChatId  String    @map("external_chat_id")
+  linkedAt        DateTime  @default(now()) @map("linked_at") @db.Timestamptz
+  blockedAt       DateTime? @map("blocked_at") @db.Timestamptz
+
+  contactPerson ContactPerson @relation(fields: [contactPersonId], references: [id], onDelete: Cascade)
+
+  @@unique([contactPersonId, channel, externalChatId])
+  @@map("messenger_links")
+}
+
+/// Botga ulash uchun bir martalik havola tokeni (DB'da faqat hash)
+model MessengerLinkToken {
+  tokenHash       String    @id @map("token_hash")
+  tenantId        String    @map("tenant_id") @db.Uuid
+  contactPersonId String    @map("contact_person_id") @db.Uuid
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz
+  usedAt          DateTime? @map("used_at") @db.Timestamptz
+
+  contactPerson ContactPerson @relation(fields: [contactPersonId], references: [id], onDelete: Cascade)
+
+  @@map("messenger_link_tokens")
+}
+
+/// Yuboriladigan xabarlar navbati va jurnali (outbox): biznes transaction ichida yoziladi, worker yuboradi (M2.7, M8.3)
+model MessageLog {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  contactPersonId String?   @map("contact_person_id") @db.Uuid
+  studentId       String?   @map("student_id") @db.Uuid
+  channel         String    @default("telegram")
+  /// manual | weekly_report | debt_reminder | payment_reminder | absence | receipt | system
+  kind            String
+  /// Xabar nimaga tegishli (dars yoki to'lov) — takror yubormaslik va bekor qilish uchun
+  refId           String?   @map("ref_id") @db.Uuid
+  chatId          String    @map("chat_id")
+  body            String
+  /// queued | sent | failed
+  status          String    @default("queued")
+  attempts        Int       @default(0)
+  nextAttemptAt   DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz
+  error           String?
+  /// Kritik xabar yuborish vaqti oynasi va kunlik limitga bo'ysunmaydi
+  critical        Boolean   @default(false)
+  createdBy       String?   @map("created_by") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  sentAt          DateTime? @map("sent_at") @db.Timestamptz
+
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([status, nextAttemptAt])
+  @@index([tenantId, kind, refId])
+  @@map("message_log")
+}
+
+model TenantSetting {
+  tenantId             String  @id @map("tenant_id") @db.Uuid
+  weeklyReportEnabled  Boolean @default(false) @map("weekly_report_enabled")
+  /// Oxirgi yuborilgan hafta ("2026-W41") — hisobot bir haftada bir marta ketishi uchun
+  weeklyReportLastWeek String? @map("weekly_report_last_week")
+  /// Navbatdagi oylik to'lovdan 3 kun oldin ota-onaga eslatma
+  paymentReminderEnabled  Boolean @default(true) @map("payment_reminder_enabled")
+  /// Oxirgi tekshirilgan kun ("2026-10-12") — eslatma kuniga bir marta ketishi uchun
+  paymentReminderLastDate String? @map("payment_reminder_last_date")
+  /// Bola darsga sababsiz kelmasa o'sha kuni ota-onaga xabar
+  absenceNoticeEnabled    Boolean @default(true) @map("absence_notice_enabled")
+  /// To'lov qabul qilinganda Telegram'ga chek
+  receiptEnabled          Boolean @default(true) @map("receipt_enabled")
+
+  @@map("tenant_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Akademik yadro va moliya: guruhlar, a'zolik, jadval, davomat, ledger
+// ---------------------------------------------------------------------------
+
+enum StudyUnitStatus {
+  forming
+  active
+  paused
+  finished
+
+  @@map("study_unit_status")
+}
+
+/// O'quv birligi (guruh). O'qituvchi va xona shu yerda — darslar generatsiyasida darsga ko'chiriladi.
+model StudyUnit {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String          @map("tenant_id") @db.Uuid
+  /// Guruh raqami (tenant bo'yicha ketma-ket): "29" deb qidirilganda shu guruh chiqadi
+  number       Int
+  branchId     String          @map("branch_id") @db.Uuid
+  name         String
+  disciplineId String          @map("discipline_id") @db.Uuid
+  levelId      String?         @map("level_id") @db.Uuid
+  teacherId    String          @map("teacher_id") @db.Uuid
+  classroomId  String?         @map("classroom_id") @db.Uuid
+  capacity     Int
+  /// Oylik abonement narxi, tiyinda. Yangi a'zolikka nusxalanadi — narx o'zgarsa eski a'zolar hisobi o'zgarmaydi (M6.2)
+  priceAmount  BigInt          @map("price_amount")
+  status       StudyUnitStatus @default(forming)
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  branch      Branch          @relation(fields: [branchId], references: [id])
+  discipline  DictionaryItem  @relation("UnitDiscipline", fields: [disciplineId], references: [id])
+  level       DictionaryItem? @relation("UnitLevel", fields: [levelId], references: [id])
+  teacher     User            @relation("UnitTeacher", fields: [teacherId], references: [id])
+  classroom   Classroom?      @relation(fields: [classroomId], references: [id])
+  enrollments Enrollment[]
+  rule        ScheduleRule?
+  lessons     Lesson[]
+  materials   Material[]
+  assignments Assignment[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, number])
+  @@index([tenantId, branchId, status])
+  @@map("study_units")
+}
+
+/// A'zolik (M4.2): sana oralig'i + o'z narxi. Bir (o'quvchi, guruh) uchun oraliqlar kesishmaydi (DB constraint).
+model Enrollment {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  studentId   String    @map("student_id") @db.Uuid
+  studyUnitId String    @map("study_unit_id") @db.Uuid
+  startDate   DateTime  @map("start_date") @db.Date
+  /// O'qishning oxirgi kuni (inclusive); null = davom etmoqda
+  endDate     DateTime? @map("end_date") @db.Date
+  priceAmount BigInt    @map("price_amount")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  student     Student      @relation(fields: [studentId], references: [id])
+  studyUnit   StudyUnit    @relation(fields: [studyUnitId], references: [id])
+  attendances Attendance[]
+
+  @@index([studyUnitId])
+  @@index([studentId])
+  @@map("enrollments")
+}
+
+/// Jadval qoidasi (M4.3): hafta kunlari + vaqt + davr. Darslar shundan materializatsiya qilinadi.
+model ScheduleRule {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  studyUnitId String   @unique @map("study_unit_id") @db.Uuid
+  /// 1 = Dushanba … 7 = Yakshanba
+  daysOfWeek  Int[]    @map("days_of_week")
+  startTime   String   @map("start_time") @db.VarChar(5)
+  endTime     String   @map("end_time") @db.VarChar(5)
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+
+  studyUnit StudyUnit @relation(fields: [studyUnitId], references: [id])
+
+  @@map("schedule_rules")
+}
+
+enum LessonStatus {
+  planned
+  completed
+  cancelled
+
+  @@map("lesson_status")
+}
+
+model Lesson {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String       @map("tenant_id") @db.Uuid
+  studyUnitId  String       @map("study_unit_id") @db.Uuid
+  date         DateTime     @db.Date
+  startAt      DateTime     @map("start_at") @db.Timestamptz
+  endAt        DateTime     @map("end_at") @db.Timestamptz
+  classroomId  String?      @map("classroom_id") @db.Uuid
+  teacherId    String       @map("teacher_id") @db.Uuid
+  status       LessonStatus @default(planned)
+  /// Qoidadan generatsiya qilingan (true) yoki qo'lda qo'shilgan
+  generated    Boolean      @default(true)
+  cancelReason String?      @map("cancel_reason")
+  completedAt  DateTime?    @map("completed_at") @db.Timestamptz
+
+  studyUnit   StudyUnit    @relation(fields: [studyUnitId], references: [id])
+  teacher     User         @relation("LessonTeacher", fields: [teacherId], references: [id])
+  classroom   Classroom?   @relation(fields: [classroomId], references: [id])
+  attendances Attendance[]
+
+  @@index([tenantId, studyUnitId, startAt])
+  @@index([tenantId, teacherId, startAt])
+  @@index([tenantId, classroomId, startAt])
+  @@map("lessons")
+}
+
+enum AttendanceStatus {
+  present
+  late
+  absent_unexcused
+  absent_excused
+
+  @@map("attendance_status")
+}
+
+model Attendance {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String           @map("tenant_id") @db.Uuid
+  lessonId     String           @map("lesson_id") @db.Uuid
+  studentId    String           @map("student_id") @db.Uuid
+  enrollmentId String           @map("enrollment_id") @db.Uuid
+  status       AttendanceStatus
+  markedBy     String?          @map("marked_by") @db.Uuid
+  markedAt     DateTime         @default(now()) @map("marked_at") @db.Timestamptz
+
+  lesson     Lesson     @relation(fields: [lessonId], references: [id])
+  student    Student    @relation(fields: [studentId], references: [id])
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@unique([lessonId, studentId])
+  @@index([studentId, markedAt(sort: Desc)])
+  @@map("attendances")
+}
+
+/// Shaxsiy hisob (M6.4): yagona append-only jadval. Tushum musbat, yechim manfiy; balans = SUM(amount).
+model LedgerEntry {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  studentId       String   @map("student_id") @db.Uuid
+  enrollmentId    String?  @map("enrollment_id") @db.Uuid
+  /// payment | charge | refund | adjustment
+  entryType       String   @map("entry_type")
+  amount          BigInt
+  /// Biznes sanasi
+  occurredAt      DateTime @map("occurred_at") @db.Timestamptz
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  /// subscription (oylik abonement; source_id = a'zolik) | manual
+  sourceType      String   @map("source_type")
+  sourceId        String?  @map("source_id") @db.Uuid
+  /// Storno yozuvi qaysi yozuvni bekor qiladi
+  reversesEntryId String?  @map("reverses_entry_id") @db.Uuid
+  /// Abonementning nechanchi oyi (a'zolik boshidan) — idempotency kaliti qismi
+  chargeRevision  Int      @default(0) @map("charge_revision")
+  /// To'lov usuli: cash | card | payme | click | bank
+  method          String?
+  comment         String?
+  /// To'lov cheki raqami (tenant bo'yicha ketma-ket); faqat to'lovlarda
+  receiptNumber   Int?     @map("receipt_number")
+  createdBy       String?  @map("created_by") @db.Uuid
+
+  student Student @relation(fields: [studentId], references: [id])
+
+  @@index([tenantId, studentId, occurredAt(sort: Desc)])
+  @@index([tenantId, occurredAt])
+  @@map("ledger_entries")
+}
+
+/// Platforma darajasidagi sozlamalar (tenant'ga bog'liq emas), masalan xato boti qaysi chatga yozishi
+model SystemSetting {
+  key   String @id
+  value String
+
+  @@map("system_settings")
+}
+
+/// Yuklangan fayllar (hozircha profil rasmlari). Mazmun diskda/S3'da, bu yerda faqat metadata.
+model StoredFile {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  /// Saqlash kaliti: tasodifiy nom — foydalanuvchi bergan fayl nomi ishlatilmaydi
+  storageKey String   @map("storage_key")
+  mime       String
+  size       Int
+  uploadedBy String?  @map("uploaded_by") @db.Uuid
+  /// Asl fayl nomi — faqat ko'rsatish va yuklab olish uchun; diskdagi nom tasodifiy
+  name       String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  materials   Material[]
+  assignments Assignment[]
+  submissions Submission[]
+
+  @@map("files")
+}
+
+// ---------------------------------------------------------------------------
+// CRM: lidlar (M2.2) — bitta kursni sotish imkoniyati
+// ---------------------------------------------------------------------------
+
+enum LeadStage {
+  new
+  contacted
+  trial
+  contract
+  enrolled
+  lost
+
+  @@map("lead_stage")
+}
+
+model Lead {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  branchId       String    @map("branch_id") @db.Uuid
+  fullName       String    @map("full_name")
+  phone          String?
+  disciplineId   String?   @map("discipline_id") @db.Uuid
+  levelId        String?   @map("level_id") @db.Uuid
+  adSourceId     String?   @map("ad_source_id") @db.Uuid
+  ownerId        String?   @map("owner_id") @db.Uuid
+  stage          LeadStage @default(new)
+  note           String?
+  lostReason     String?   @map("lost_reason")
+  /// Konversiyadan keyin yaratilgan o'quvchi (M2.5)
+  studentId      String?   @map("student_id") @db.Uuid
+  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  branch     Branch          @relation(fields: [branchId], references: [id])
+  discipline DictionaryItem? @relation("LeadDiscipline", fields: [disciplineId], references: [id])
+  level      DictionaryItem? @relation("LeadLevel", fields: [levelId], references: [id])
+  adSource   DictionaryItem? @relation("LeadSource", fields: [adSourceId], references: [id])
+  owner      User?           @relation(fields: [ownerId], references: [id])
+  events     LeadEvent[]
+
+  @@index([tenantId, stage, createdAt(sort: Desc)])
+  @@index([tenantId, ownerId, stage])
+  @@map("leads")
+}
+
+/// Lid tarixi: bosqich o'zgarishi va izohlar (lead_status_history)
+model LeadEvent {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  leadId    String     @map("lead_id") @db.Uuid
+  /// created | stage | note | converted
+  type      String
+  fromStage LeadStage? @map("from_stage")
+  toStage   LeadStage? @map("to_stage")
+  text      String?
+  actorId   String?    @map("actor_id") @db.Uuid
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt(sort: Desc)])
+  @@map("lead_events")
+}
+
+// ---------------------------------------------------------------------------
+// Ta'lim: darsliklar, uy vazifalari va o'quvchi javoblari
+// ---------------------------------------------------------------------------
+
+/// Darslik / dars materiali: fayl (PDF, Word, rasm…) yoki havola (masalan video)
+model Material {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  studyUnitId String   @map("study_unit_id") @db.Uuid
+  title       String
+  description String?
+  fileId      String?  @map("file_id") @db.Uuid
+  link        String?
+  createdBy   String?  @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  studyUnit StudyUnit   @relation(fields: [studyUnitId], references: [id], onDelete: Cascade)
+  file      StoredFile? @relation(fields: [fileId], references: [id])
+
+  @@index([studyUnitId, createdAt(sort: Desc)])
+  @@map("materials")
+}
+
+/// Uy vazifasi (guruhga beriladi)
+model Assignment {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  studyUnitId String    @map("study_unit_id") @db.Uuid
+  title       String
+  description String?
+  fileId      String?   @map("file_id") @db.Uuid
+  /// Topshirish muddati (shu kun oxirigacha)
+  dueDate     DateTime? @map("due_date") @db.Date
+  maxScore    Int       @default(100) @map("max_score")
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  studyUnit   StudyUnit    @relation(fields: [studyUnitId], references: [id], onDelete: Cascade)
+  file        StoredFile?  @relation(fields: [fileId], references: [id])
+  submissions Submission[]
+
+  @@index([studyUnitId, createdAt(sort: Desc)])
+  @@map("assignments")
+}
+
+/// O'quvchining vazifa javobi: fayl va/yoki matn; o'qituvchi baho va izoh qo'yadi
+model Submission {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  assignmentId String    @map("assignment_id") @db.Uuid
+  studentId    String    @map("student_id") @db.Uuid
+  text         String?
+  fileId       String?   @map("file_id") @db.Uuid
+  submittedAt  DateTime  @default(now()) @map("submitted_at") @db.Timestamptz
+  score        Int?
+  feedback     String?
+  gradedBy     String?   @map("graded_by") @db.Uuid
+  gradedAt     DateTime? @map("graded_at") @db.Timestamptz
+
+  assignment Assignment  @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student    Student     @relation(fields: [studentId], references: [id])
+  file       StoredFile? @relation(fields: [fileId], references: [id])
+
+  @@unique([assignmentId, studentId])
+  @@index([studentId])
+  @@map("submissions")
+}

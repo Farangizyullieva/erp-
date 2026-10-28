@@ -1,0 +1,17 @@
+{
+  "name": "educrm",
+  "private": true,
+  "packageManager": "pnpm@11.18.0",
+  "scripts": {
+    "backend:dev": "pnpm --filter @educrm/backend dev",
+    "frontend:dev": "pnpm --filter @educrm/frontend dev",
+    "test": "pnpm --filter @educrm/backend test",
+    "db:setup": "bash scripts/db-setup.sh",
+    "db:migrate": "pnpm --filter @educrm/backend db:migrate",
+    "db:seed": "pnpm --filter @educrm/backend db:seed",
+    "db:demo": "pnpm --filter @educrm/backend db:demo",
+    "db:demo:clear": "pnpm --filter @educrm/backend db:demo:clear",
+    "audit": "pnpm audit --prod",
+    "install:ci": "pnpm install --frozen-lockfile"
+  }
+}
