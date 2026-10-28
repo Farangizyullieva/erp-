@@ -25,39 +25,39 @@ async function main(): Promise<void> {
   const alerts = app.get(AlertService);
 
   process.on('unhandledRejection', (reason: unknown) => {
-    const message =
-      reason instanceof Error
-        ? `${reason.name}: ${reason.message}`
-        : String(reason).slice(0, 400);
+  const message =
+    reason instanceof Error
+      ? `${reason.name}: ${reason.message}`
+      : String(reason).slice(0, 400);
 
-    console.error('Unhandled rejection:', message);
+  console.error('Unhandled rejection:', message);
 
-    void alerts
-      .send('critical', 'Ushlanmagan xato (unhandledRejection)', [
-        message,
-      ])
-      .catch((error: unknown) => {
-        console.error('Alert yuborilmadi:', error);
-      });
-  });
+  try {
+    alerts.send(
+      'critical',
+      'Ushlanmagan xato (unhandledRejection)',
+      [message],
+    );
+  } catch (error) {
+    console.error('Alert yuborilmadi:', error);
+  }
+});
 
   process.on('uncaughtException', (error: Error) => {
-    console.error('Uncaught exception:', error);
+  console.error('Uncaught exception:', error);
 
-    // Jarayonni xavfsiz boshqarish uchun xatodan keyin
-    // ilovani yopishga harakat qilamiz.
-    void alerts
-      .send('critical', 'Ushlanmagan xato (uncaughtException)', [
-        `${error.name}: ${error.message}`,
-      ])
-      .catch((alertError: unknown) => {
-        console.error('Alert yuborilmadi:', alertError);
-      })
-      .finally(() => {
-        process.exit(1);
-      });
-  });
-
+  try {
+    alerts.send(
+      'critical',
+      'Ushlanmagan xato (uncaughtException)',
+      [`${error.name}: ${error.message}`],
+    );
+  } catch (alertError) {
+    console.error('Alert yuborilmadi:', alertError);
+  } finally {
+    process.exit(1);
+  }
+});
   const port = Number(process.env.PORT ?? 3001);
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
